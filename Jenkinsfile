@@ -20,16 +20,22 @@ pipeline {
     MAXIMUM_IMAGE_AGE_SECONDS = "604800" // 1 week
   }
   
-  stages {
+ stages {
     
     stage("Initialize Variables") {
       steps {
         script {
           try {
             CURRENT_UPSTREAM_DOCKERHUB_IMAGE_DIGEST = params.CURRENT_UPSTREAM_DOCKERHUB_IMAGE_DIGEST
+            FORCE_IMAGE_REBUILD = params.FORCE_IMAGE_REBUILD
           } catch (Exception e) {
             echo("Could not read CURRENT_UPSTREAM_DOCKERHUB_IMAGE_DIGEST from parameters. Assuming this is the first run of the pipeline. Exception: ${e}")
             CURRENT_UPSTREAM_DOCKERHUB_IMAGE_DIGEST = ""
+            FORCE_IMAGE_REBUILD = "false"
+          }
+          if (FORCE_IMAGE_REBUILD == "true") {
+            echo("Forced image rebuild requested. Image WILL be rebuilt.")
+            REBUILD_IMAGE = "true"
           }
         }
       }
@@ -44,12 +50,16 @@ pipeline {
     stage("Check for git repository changes") {
       steps {
         script {
-          if(currentBuild.changeSets.size() > 0) {
-            echo("There are changes in the git repository since the last build. Image will be rebuilt.")
-            REBUILD_IMAGE = true
-          }
-          else {
-            echo("There are NO changes in the git repository since the last build. This will not trigger an image rebuild.")
+          if (REBUILD_IMAGE == "false") {
+            if (currentBuild.changeSets.size() > 0) {
+             echo("There are changes in the git repository since the last build. Image will be rebuilt.")
+              REBUILD_IMAGE = "true"
+            }
+            else {
+              echo("There are NO changes in the git repository since the last build. This will not trigger an image rebuild.")
+            }
+          } else {
+            echo("Image is already marked for build. Skipping this stage.")
           }
         }
       }
@@ -68,7 +78,7 @@ pipeline {
           echo("NEW_UPSTREAM_DOCKERHUB_IMAGE_DIGEST: '${NEW_UPSTREAM_DOCKERHUB_IMAGE_DIGEST}'")
           if (CURRENT_UPSTREAM_DOCKERHUB_IMAGE_DIGEST != NEW_UPSTREAM_DOCKERHUB_IMAGE_DIGEST) {
             echo("Upstream Docker Hub image digests are not equal. Image will be rebuilt.")
-            REBUILD_IMAGE = true
+            REBUILD_IMAGE = "true"
           } else {
             echo("Upstream Docker Hub image digests are equal. This will NOT cause an image rebuild.")
           }
@@ -94,7 +104,7 @@ pipeline {
             echo("MAXIMUM_IMAGE_AGE_SECONDS_INT: '${MAXIMUM_IMAGE_AGE_SECONDS_INT}'")
             if (SECONDS_SINCE_LAST_IMAGE_INT > MAXIMUM_IMAGE_AGE_SECONDS_INT) {
               echo("Image is too old. Image will be rebuilt.")
-              REBUILD_IMAGE = true
+              REBUILD_IMAGE = "true"
             } else {
               echo("Image is NOT too old. This will NOT cause an image rebuild.")
             }
@@ -137,7 +147,11 @@ pipeline {
             parameters([
               string(defaultValue: "${NEW_UPSTREAM_DOCKERHUB_IMAGE_DIGEST}",
                      description: "Current Upstream DockerHub Image Digest",
-                     name: 'CURRENT_UPSTREAM_DOCKERHUB_IMAGE_DIGEST',
+                     name: "CURRENT_UPSTREAM_DOCKERHUB_IMAGE_DIGEST",
+                     trim: true),
+              string(defaultValue: "false",
+                     description: "Force image rebuild and republish to Docker Hub?",
+                     name: "FORCE_IMAGE_REBUILD",
                      trim: true)
             ])
           ])
