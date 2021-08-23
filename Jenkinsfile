@@ -20,7 +20,7 @@ pipeline {
   
   stages {
     
-    stage('Initialize Variables') {
+    stage("Initialize Variables") {
       steps {
         script {
           try {
@@ -33,18 +33,32 @@ pipeline {
       }
     }
     
-    stage('Login to Docker Hub') {
+    stage("Login to Docker Hub") {
       steps {
         sh 'echo $DOCKERHUB_CREDENTIALS_PSW | docker login -u $DOCKERHUB_CREDENTIALS_USR --password-stdin'
       }
     }
     
-    stage('Fetch new upstream Docker Hub Image Digest') {
+    stage("Check for git repository changes") {
+      steps {
+        script {
+          if(currentBuild.changeSets.size() > 0) {
+            echo("There are changes in the git repository since the last build. Image will be rebuilt.")
+            REBUILD_IMAGE = true
+          }
+          else {
+            echo("There are NO changes in the git repository since the last build. This will not trigger an image rebuild.")
+          }
+        }
+      }
+    }
+    
+    stage("Fetch new Upstream Docker Hub Image Digest") {
       steps {
         script {
           NEW_UPSTREAM_DOCKERHUB_IMAGE_DIGEST = sh(
             script: '''
-              docker manifest inspect ${UPSTREAM_IMAGE_NAME} -v | jq '.Descriptor' | jq -r '.digest'
+              docker manifest inspect ${UPSTREAM_IMAGE_NAME} -v | jq '.[].Descriptor | select (.platform.architecture=="amd64" and .platform.os=="linux")' | jq -r '.digest'
             ''',
             returnStdout: true
           ).trim()
@@ -60,24 +74,28 @@ pipeline {
       }
     }
     
-    stage('Determine if it has been more than 2 weeks since the latest build') {
+    stage("Determine if it has been more than 2 weeks since the latest build") {
       steps {
         script {
-          SECONDS_SINCE_LAST_IMAGE = sh(
-            script: '''
-              d1=$(curl -s GET https://hub.docker.com/v2/repositories/${DOCKERHUB_USERNAME}/${DOCKERHUB_REPO_NAME}/tags/latest | jq -r ".last_updated")
-              ddiff=$(( $(date "+%s") - $(date -d "$d1" "+%s") ))
-              echo $ddiff
-            ''',
-            returnStdout: true
-          ).trim()
-          SECONDS_SINCE_LAST_IMAGE_INT = SECONDS_SINCE_LAST_IMAGE.toInteger()
-          echo("SECONDS_SINCE_LAST_IMAGE_INT: '${SECONDS_SINCE_LAST_IMAGE_INT}'")
-          if (SECONDS_SINCE_LAST_IMAGE_INT > 1209600) { // 1209600 is 2 weeks in seconds
-            echo("It has been more than 2 weeks since the last build. Image will be rebuilt.")
-            REBUILD_IMAGE = true
+          if (REBUILD_IMAGE == "false") {
+            SECONDS_SINCE_LAST_IMAGE = sh(
+              script: '''
+                d1=$(curl -s GET https://hub.docker.com/v2/repositories/${DOCKERHUB_USERNAME}/${DOCKERHUB_REPO_NAME}/tags/${DOCKERHUB_REPO_TAG} | jq -r ".last_updated")
+                ddiff=$(( $(date "+%s") - $(date -d "$d1" "+%s") ))
+                echo $ddiff
+              ''',
+              returnStdout: true
+            ).trim()
+            SECONDS_SINCE_LAST_IMAGE_INT = SECONDS_SINCE_LAST_IMAGE.toInteger()
+            echo("SECONDS_SINCE_LAST_IMAGE_INT: '${SECONDS_SINCE_LAST_IMAGE_INT}'")
+            if (SECONDS_SINCE_LAST_IMAGE_INT > 1209600) { // 1209600 is 2 weeks in seconds
+              echo("It has been more than 2 weeks since the last build. Image will be rebuilt.")
+              REBUILD_IMAGE = true
+            } else {
+              echo("Image is newer than 2 weeks. This will not cause an image rebuild.")
+            }
           } else {
-            echo("Image is newer than 2 weeks. This will not cause an image rebuild.")
+            echo("Image is already marked for build. Skipping this stage.")
           }
         }
       }
@@ -96,13 +114,13 @@ pipeline {
       }
     }
     
-    stage('Build') {
+    stage("Build") {
       steps {
         sh 'docker build -t ${DOCKERHUB_USERNAME}/${DOCKERHUB_REPO_NAME}:${DOCKERHUB_REPO_TAG} .'
       }
     }
        
-    stage('Push image to Docker Hub') {
+    stage("Push image to Docker Hub") {
       steps {
         sh 'docker push ${DOCKERHUB_USERNAME}/${DOCKERHUB_REPO_NAME}:${DOCKERHUB_REPO_TAG}'
       }
